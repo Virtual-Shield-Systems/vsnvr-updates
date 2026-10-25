@@ -252,7 +252,8 @@ function Get-Distros {
 # PowerShell's own pipe would append CRLF, and wsl.exe mangles backslashes in arguments.
 function Invoke-Linux([string]$Name, [string]$Script, [string[]]$ScriptArgs = @(), [scriptblock]$OnLine = $null, [scriptblock]$OnTick = $null) {
     $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes(($Script -replace "`r", '') + "`n")
-    return Invoke-Process 'wsl.exe' ((@('-d', $Name, '-u', 'root', '--', 'bash', '-s', '--') + $ScriptArgs) -join ' ') $bytes $OnLine $OnTick
+    $quoted = @($ScriptArgs | ForEach-Object { "'" + ($_ -replace "'", "'\''") + "'" })
+    return Invoke-Process 'wsl.exe' ((@('-d', $Name, '-u', 'root', '--', 'bash', '-s', '--') + $quoted) -join ' ') $bytes $OnLine $OnTick
 }
 
 # This PC's time zone as an IANA name, converted by the ICU that ships with Windows.
@@ -513,12 +514,12 @@ mkdir -p "$r/etc/systemd/system/local-fs-pre.target.wants" "$r/var/lib/vs-nvr" "
 ln -sf /etc/systemd/system/vs-nvr-rshared.service "$r/etc/systemd/system/local-fs-pre.target.wants/vs-nvr-rshared.service"
 img="$r/var/lib/vs-nvr/recordings.img"
 fallocate -l "${footage}G" "$img"
-mkfs.ext4 -q -L vs-nvr-rec "$img"
+mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L vs-nvr-rec "$img"
 m=$(mktemp -d)
 mount -o loop "$img" "$m"
 chown 65531:65531 "$m"
 umount "$m"
-echo '/var/lib/vs-nvr/recordings.img /srv/vs-nvr/recordings ext4 loop,nofail 0 2' >> "$r/etc/fstab"
+echo '/var/lib/vs-nvr/recordings.img /srv/vs-nvr/recordings ext4 loop,nofail,X-fstrim.notrim 0 2' >> "$r/etc/fstab"
 umount "$r"
 '@
         # Hand over the fixed VHDX's virtual size, not the file length (it carries a footer).
