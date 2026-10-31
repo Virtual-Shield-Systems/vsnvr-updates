@@ -239,10 +239,18 @@ function Save-State($s) {
     [System.IO.File]::WriteAllText($StatePath, ($s | ConvertTo-Json -Depth 5))
 }
 
+# Windows PowerShell 5.1 turns a native command's redirected stderr into a terminating
+# error under ErrorActionPreference Stop, so a probe that only wants the exit code runs
+# here, under Continue.
+function Invoke-Probe([scriptblock]$Command) {
+    $ErrorActionPreference = 'Continue'
+    & $Command
+}
+
 function Get-Distros {
     $prev = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::Unicode
-    try { $names = @(wsl.exe --list --quiet 2>$null); $ok = ($LASTEXITCODE -eq 0) } finally { [Console]::OutputEncoding = $prev }
+    try { $names = @(Invoke-Probe { wsl.exe --list --quiet 2>$null }); $ok = ($LASTEXITCODE -eq 0) } finally { [Console]::OutputEncoding = $prev }
     # With no distros, wsl.exe prints a message and fails.
     if (-not $ok) { return @() }
     return @($names | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
@@ -336,7 +344,7 @@ function Assert-Prerequisites {
     if (-not (Get-Command New-NetFirewallHyperVRule -ErrorAction SilentlyContinue)) {
         Fail "This Windows has no WSL firewall support (New-NetFirewallHyperVRule). Update Windows, then re-run."
     }
-    wsl.exe --version *> $null
+    Invoke-Probe { wsl.exe --version *> $null }
     if ($LASTEXITCODE -ne 0) {
         Write-Step "Installing WSL"
         wsl.exe --install --no-distribution

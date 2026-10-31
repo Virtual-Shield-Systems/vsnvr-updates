@@ -6,21 +6,24 @@
 # script, https://get.docker.com). On an interactive terminal it also
 # offers to mount an EXISTING recording filesystem you select, to combine two or
 # more BLANK drives (no partition table, no signature) into one recording array,
-# or to reserve space for recordings in a file on the system disk. It never
-# formats a drive that carries anything, partitions a disk, rewrites network
-# config, touches SSH, enables/resets a firewall, or creates users. Run
-# non-interactively (piped, no terminal) it makes no such offer and instead
-# requires the drive already mounted (--recording-mount), or the blank drives to
-# combine (--create-array).
+# to reserve space for recordings in a file on the system disk, or to leave the
+# drive for later. It never formats a drive that carries anything, partitions a
+# disk, rewrites network config, touches SSH, enables/resets a firewall, or
+# creates users. Run non-interactively (piped, no terminal) it makes no such
+# offer: it uses a drive already mounted (--recording-mount), or the blank drives
+# named (--create-array, or the USB stick's --format-drive). With no recording
+# drive it finishes anyway, and the owner chooses one in the web app.
 #
 # It runs as root (writes /etc/systemd/system and /etc/fstab, talks to Docker).
 # What it can change: the /opt/vs-nvr stack directory, the vs-nvr systemd unit, and
 # up to two installer-owned /etc/fstab lines — the recording-parent rshared bind,
 # and (only when you pick a drive or reserved space) a mount line for
 # /mnt/recordings; reserved space adds its file, /var/lib/vs-nvr/recordings.img.
-# An array it builds adds the mdadm and xfsprogs packages; one it builds or adopts
-# adds an /etc/mdadm/mdadm.conf line (unless one is there), an initramfs update
-# and the vs-nvr-array unit.
+# An array it builds, or an install with no drive on an apt host, adds the mdadm
+# package; an array it builds or adopts adds an /etc/mdadm/mdadm.conf line
+# (unless one is there), an initramfs update and the vs-nvr-array unit. The
+# drives it formats are set up by the RAID helper, which records what it adds
+# in the same manifest.
 # If you agree at its prompt, it also keeps a local-time hardware clock in UTC;
 # uninstall leaves that in place, as it leaves Docker when the installer installed
 # it. Every other host change is recorded verbatim in
@@ -199,7 +202,7 @@ UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/Virtual-Shield-Systems/vsn
 # is the recommended trust anchor for a signed public release. Whatever we pull is
 # retagged to COMPOSE_IMAGE_REF below, so the extracted compose/unit/attester and
 # the running container all come from ONE image.
-VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:9562a92227f11ce5bbca2c89468e0562ca908ecc0ec8873f49afa2a8acca1efb}"
+VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:191982c2352d45736eb17afa360404510e522980a8da5a61e05e5c0a4e2b6e3c}"
 # The reference the bundled docker-compose.yml names; the pulled image is retagged
 # to this so `docker compose` uses exactly the image we extracted from (rather than
 # a second `docker compose pull` that could fetch a newer :latest).
@@ -208,13 +211,13 @@ COMPOSE_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr:latest"
 # The AI-detection sidecar image (amd64-only). Same pull+verify+retag treatment as
 # the main image so the whole bundle is pinned coherently. When pinning digests, pin
 # this one from the same release as VS_NVR_IMAGE; nothing checks the pairing.
-VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:1309888ec733c011a0eedaa63f698ff9cd230fc3fe37675f84a6e0abe04a8f80}"
+VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:bfd5e47b8a15c171727b234c6a3b3962d7673bae03dc039eb9447c14c4e5a9b5}"
 COMPOSE_AIDETECT_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-aidetect:latest"
 
 # The media-plane sidecar image — the WAN-facing WebRTC data-channel peer that
 # carries remote playback (docs/media-plane.md). Same pull+verify+retag
 # treatment, and like the others a signed release bakes the paired digest here.
-VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:45582defb11a88fc309a7bd2fd8bcd25440747c47ead49e8b6e8337181154d88}"
+VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:852fc5db206afb71ee7eea06d72b8be88f200ae753bd380027467d740e198a44}"
 COMPOSE_MEDIADC_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-mediadc:latest"
 # Fixed in docker-compose.yml: the sidecar advertises this port as its ICE host
 # candidate, so host and container sides must match. Reported in the closing notes.
@@ -234,7 +237,7 @@ INSTALL_DOCKER=0         # --install-docker: install Docker Engine without askin
 RECORDING_MOUNT=""       # set only if --recording-mount was passed
 CREATE_ARRAY=""          # --create-array DISK,DISK[,...]: build the recording array from these blank drives
 RAID_LEVEL=""            # --raid-level 5|6: the array's level with 4+ drives (empty = by count)
-CHECK_DRIVE=""           # --check-drive DISK: the USB stick's single drive, checked and nothing installed
+FORMAT_DRIVE=""          # --format-drive DISK: the USB stick's single drive, formatted XFS by the RAID helper
 UPDATE_URL_ARG=""        # set only if --update-url was passed
 MAX_STORAGE_GB=0         # 0 = size the cap from the recording drive
 RETENTION_DAYS=30
@@ -243,13 +246,14 @@ usage() {
   cat <<USAGE
 VS NVR public installer
 
-Requires: Linux, root (sudo), Docker Engine + Compose plugin (offered when
-missing), and a recording drive. On an interactive terminal the installer offers to
-mount an existing formatted filesystem you pick (at $RECORDING_MOUNT_DEFAULT), to
-combine two or more blank drives into one recording array, or to reserve space for
-recordings on the system disk when it has no spare drive. Run non-interactively, it
-instead requires the drive ALREADY mounted at a path whose last component is
-"recordings", or --create-array.
+Requires: Linux, root (sudo), and Docker Engine + Compose plugin (offered when
+missing). On an interactive terminal the installer offers to mount an existing
+formatted filesystem you pick (at $RECORDING_MOUNT_DEFAULT), to combine two or more
+blank drives into one recording array, to reserve space for recordings on the
+system disk when it has no spare drive, or to leave the drive for later. Run
+non-interactively, it uses a drive ALREADY mounted at $RECORDING_MOUNT_DEFAULT (or
+--recording-mount), or --create-array. With no recording drive it installs anyway
+and records nothing until the owner chooses a drive in the web app.
 
 Usage: sudo bash install.sh [options]
   --recording-mount PATH   Use this ALREADY-mounted recording directory (default:
@@ -265,11 +269,10 @@ Usage: sudo bash install.sh [options]
                            default, any 2 drives can fail) or RAID 5 (one more
                            drive of space, any 1 can fail, and a second failure
                            during the rebuild loses the array).
-  --check-drive DISK       Print DISK's identity and whether it may be formatted
-                           (VSNVR_DRIVE_ID=, VSNVR_DRIVE_REASON=, VSNVR_DRIVE_TEXT=;
-                           an empty reason means it may), then stop. For the USB
-                           stick's setup. Changes nothing on the host but Docker's
-                           images, and needs Docker installed.
+  --format-drive DISK      Format this one BLANK whole disk XFS and mount it at
+                           $RECORDING_MOUNT_DEFAULT, without asking. For the USB stick's
+                           setup. A USB disk, or one with a partition table or any
+                           signature, is refused.
   --no-aidetect            Install without the AI-detection sidecar (fresh install
                            only). Default: on (amd64 hosts only; auto-skipped
                            elsewhere). The engine is idle until a camera enables it.
@@ -289,7 +292,7 @@ Usage: sudo bash install.sh [options]
 Never formats a drive that carries anything, partitions a disk, rewrites network
 config, touches SSH, enables a firewall, or creates users. It mounts an existing
 filesystem you select, or formats only blank drives you choose to combine into an
-array (wiping a used drive is yours to do by hand). Reserved space is a file it
+array or name with --format-drive (wiping a used drive is yours to do by hand). Reserved space is a file it
 creates and formats ($RESERVE_IMAGE).
 USAGE
 }
@@ -299,7 +302,7 @@ while [[ $# -gt 0 ]]; do
     --recording-mount) RECORDING_MOUNT="$2"; shift 2 ;;
     --create-array)    CREATE_ARRAY="$2"; shift 2 ;;
     --raid-level)      RAID_LEVEL="$2"; shift 2 ;;
-    --check-drive)     CHECK_DRIVE="$2"; shift 2 ;;
+    --format-drive)    FORMAT_DRIVE="$2"; shift 2 ;;
     --no-aidetect)     NO_AIDETECT=1; shift ;;
     --install-docker)  INSTALL_DOCKER=1; shift ;;
     --aidetect-image)  VS_NVR_AIDETECT_IMAGE="$2"; shift 2 ;;
@@ -319,7 +322,8 @@ case "$RETENTION_DAYS" in ''|*[!0-9]*) abort "--retention-days must be a positiv
 [ -z "$CREATE_ARRAY" ] || [ -z "$RECORDING_MOUNT" ] || abort "--create-array and --recording-mount can't be combined: the array is mounted at $RECORDING_MOUNT_DEFAULT."
 case "$RAID_LEVEL" in ''|5|6) ;; *) abort "--raid-level must be 5 or 6 (got: $RAID_LEVEL)" ;; esac
 [ -z "$RAID_LEVEL" ] || [ -n "$CREATE_ARRAY" ] || abort "--raid-level is used with --create-array."
-[ -z "$CHECK_DRIVE" ] || [ -z "$CREATE_ARRAY$RECORDING_MOUNT" ] || abort "--check-drive can't be combined with --create-array or --recording-mount."
+[ -z "$FORMAT_DRIVE" ] || [ -z "$CREATE_ARRAY$RECORDING_MOUNT" ] || abort "--format-drive can't be combined with --create-array or --recording-mount."
+case "$FORMAT_DRIVE" in *,*) abort "--format-drive takes one drive (got: $FORMAT_DRIVE)." ;; esac
 if [ -n "$UPDATE_URL_ARG" ]; then
   case "$UPDATE_URL_ARG" in *[[:space:]]*) abort "--update-url must not contain whitespace (got: $UPDATE_URL_ARG)" ;; esac
 fi
@@ -436,7 +440,6 @@ if command -v docker >/dev/null 2>&1; then
   docker_ready
   log "Linux, Docker, and Compose present"
 else
-  [ -z "$CHECK_DRIVE" ] || abort "Docker Engine not found. --check-drive needs it installed."
   may_install_docker || abort "Docker Engine not found. Install it first (https://docs.docker.com/engine/install/), or re-run with --install-docker."
   DOCKER_MISSING=1
   log "Linux present. Docker Engine will be installed after checking where to record"
@@ -481,12 +484,13 @@ kept_image_ok() {
     [ -z "$(losetup -j "$RESERVE_IMAGE" 2>/dev/null)" ]
 }
 
-# ── Recording arrays (docs/raid.md) ────────────────────────────────
-# Two or more blank drives become one md array with XFS on it, mounted at the
-# recording path. Which drives qualify, mdadm and mkfs.xfs are the RAID helper's
-# (raid-helper.sh, run from the image this script pulled and verified, as the
-# app runs it); this script keeps the host config and the manifest. Nothing
-# here erases a signature.
+# ── Drives the installer formats (docs/raid.md, docs/drive-setup.md) ──
+# Two or more blank drives become one md array with XFS on it, and the USB
+# stick's single blank drive (--format-drive) one XFS filesystem, mounted at the
+# recording path. Which drives qualify, mdadm, mkfs.xfs, the host config and
+# their manifest records are the RAID helper's setup steps (raid-helper.sh, run
+# from the image this script pulled and verified, as the app runs them); this
+# script keeps its own install bookkeeping. Nothing here erases a signature.
 ARRAY_FSTAB_OPTS="defaults,nofail,x-systemd.device-timeout=60s,${VSNVR_FSTAB_OWN_MARK}"
 MDADM_CONF=/etc/mdadm/mdadm.conf
 ARRAY_UNIT=vs-nvr-array.service
@@ -499,10 +503,10 @@ ARRAY_WIPE_DOCS="https://vsnvr.com/docs/troubleshooting/#raid-wipe-drive"
 # helper takes the maintenance lock itself (docs/raid.md, The lock).
 HELPER_DIR=""
 HELPER_OUT=""; HELPER_OK=""; HELPER_CODE=""; HELPER_MSG=""; HELPER_ACTION=""; HELPER_DEVICE=""
-HELPER_LEVEL=""; HELPER_USABLE=""; HELPER_SMALLEST=""
+HELPER_LEVEL=""; HELPER_USABLE=""; HELPER_SMALLEST=""; HELPER_WARNINGS=""
 raid_helper() {
   local project="$INSTALL_DIR" fields propagation=rprivate leftover state created
-  HELPER_OK="" HELPER_CODE="" HELPER_MSG="" HELPER_ACTION="" HELPER_DEVICE="" HELPER_LEVEL="" HELPER_USABLE="" HELPER_SMALLEST=""
+  HELPER_OK="" HELPER_CODE="" HELPER_MSG="" HELPER_ACTION="" HELPER_DEVICE="" HELPER_LEVEL="" HELPER_USABLE="" HELPER_SMALLEST="" HELPER_WARNINGS=""
   if [ ! -d "$INSTALL_DIR" ]; then
     # A box with no install yet has nothing to serialise with: a read-only scan
     # leaves no trace on it.
@@ -511,7 +515,7 @@ raid_helper() {
   fi
   mkdir -p "$RECORDING_PATH"
   # Docker's rslave needs a shared parent, which the rshared step below makes
-  # only after the drive is chosen; before that a mounted array is still seen.
+  # only after the drive is chosen; the setup steps that mount run after it.
   if findmnt -no PROPAGATION --target "$RECORDING_PATH" 2>/dev/null | grep -q shared; then propagation=rslave; fi
   # A helper that exited without being removed (say the daemon restarted under
   # it), or was created and never started more than 10 minutes ago (the CLI
@@ -524,20 +528,20 @@ raid_helper() {
       docker rm "$leftover" >/dev/null 2>&1 || true ;;
   esac
   HELPER_OUT="$(docker run --rm --name vs-nvr-raid-helper --sig-proxy=false \
-    --privileged --pid=host --network none --hostname "$(uname -n)" \
+    --privileged --pid=host --uts=host --network none \
     -v /dev:/dev -v /run/udev:/run/udev:ro -v "$project:$project" \
     --mount "type=bind,source=$RECORDING_PATH,target=$RECORDING_PATH,bind-propagation=$propagation" \
     -e "VSNVR_PROJECT_DIR=$project" -e "VSNVR_RECORDING_DIR=$MOUNT_PATH" \
     --entrypoint /bin/bash "$IMAGE_ID" /app/raid-helper.sh "$@" < /dev/null 2>> "$LOG_FILE")" || true
   HELPER_OUT="${HELPER_OUT##*$'\n'}"
   fields="$(helper_jq --arg mode "$1" 'select(.mode == $mode) | [.ok, .error.code, .error.message, .action, .device,
-    .level, .usable_bytes, .smallest_bytes] | map(. // "" | tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")')" || fields=""
+    .level, .usable_bytes, .smallest_bytes, (.warnings // [] | join(" "))] | map(. // "" | tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")')" || fields=""
   if [ -z "$fields" ]; then
     [ "$FANCY" = 1 ] || tail -n 15 "$LOG_FILE" >&2
     HELPER_MSG="The RAID helper gave no result for '$1' (full output: $LOG_FILE)."
     return 1
   fi
-  IFS=$'\x1f' read -r HELPER_OK HELPER_CODE HELPER_MSG HELPER_ACTION HELPER_DEVICE HELPER_LEVEL HELPER_USABLE HELPER_SMALLEST <<< "$fields"
+  IFS=$'\x1f' read -r HELPER_OK HELPER_CODE HELPER_MSG HELPER_ACTION HELPER_DEVICE HELPER_LEVEL HELPER_USABLE HELPER_SMALLEST HELPER_WARNINGS <<< "$fields"
   [ "$HELPER_OK" = true ]
 }
 # helper_jq [JQ ARGS...] FILTER — FILTER over HELPER_OUT, with the image's jq
@@ -603,46 +607,60 @@ reason_text() {
 
 human_size() { awk -v b="$1" 'BEGIN { if (b >= 1e12) printf "%.1f TB", b / 1e12; else printf "%.1f GB", b / 1e9 }'; }
 
-# drive_arg NAME — the --create-array argument naming disk NAME, else /dev/NAME.
+# drive_arg NAME — the --create-array or --format-drive argument naming disk
+# NAME, else /dev/NAME.
 drive_arg() {
   local d a="/dev/$1" i
   i="$(disk_index "$1")" || { echo "$a"; return 0; }
-  for d in "${CREATE_ARRAY_DEVS[@]}"; do [ "${d##*=}" != "$i" ] || a="${d%=*}"; done
+  for d in "${DRIVE_ARGS[@]}"; do [ "${d##*=}" != "$i" ] || a="${d%=*}"; done
   echo "$a"
 }
 
-# array_refused — the helper refused an array step: a drive it won't take is the
-# refusal (non-interactive) or a stop naming each drive and its first reason;
-# anything else stops with the helper's own message.
-array_refused() {
+# setup_refused — the helper refused a setup step: a drive it won't take is the
+# refusal (--create-array, --format-drive) or a stop naming each drive and its
+# first reason; anything else stops with the helper's own message.
+setup_refused() {
   local name code sigs lines=()
   if [ "$HELPER_CODE" = drive_ineligible ]; then
     while IFS=$'\x1f' read -r name code sigs; do
       lines+=("$(drive_arg "$name"): $code: $(reason_text "$code" "$sigs")")
     done < <(helper_jq '.error.drives[]? | [.device, .reasons[0], (.signatures | join(" "))] | join("\u001f")')
     if [ "${#lines[@]}" -gt 0 ]; then
-      [ -n "$CREATE_ARRAY" ] && array_refuse "${lines[@]}"
+      [ -n "$CREATE_ARRAY$FORMAT_DRIVE" ] && array_refuse "${lines[@]}"
       abort "Can't build the recording array:$(printf '\n  %s' "${lines[@]}")"
     fi
   fi
   case "$HELPER_CODE" in
-    mdadm_failed|mkfs_failed)
+    # The helper's message offers the app's Start over, which a fresh install
+    # doesn't have yet; wiped by hand, a re-run builds it again with the plan.
+    create_interrupted)
+      abort "The recording array was interrupted while being created. Wipe its drives by hand ($ARRAY_WIPE_DOCS), then re-run." ;;
+    mdadm_failed|mkfs_failed|config_failed|prereq_failed)
       [ "$FANCY" = 1 ] || tail -n 15 "$LOG_FILE" >&2
       abort "$HELPER_MSG (full output: $LOG_FILE)" ;;
   esac
   abort "$HELPER_MSG"
 }
 
-# array_sizes INDEX... — the helper's check of these drives as one new array at
-# RAID_LEVEL (empty = by count): ARRAY_SUMMARY ("RAID 6 on 4 drives, about
-# 48.0 TB usable") and ARRAY_MIXED_NOTE when the drives differ in size.
+# setup_preflight ACTION --drive ID... — the helper's read-only check of these
+# drives, at RAID_LEVEL (empty = by count) for an array, and of this host
+# (docs/drive-setup.md, Helper steps). Status 1 when it refused.
+setup_preflight() {
+  local action="$1"; shift
+  raid_helper setup --step=preflight --action "$action" ${RAID_LEVEL:+--level "$RAID_LEVEL"} "$@" --op-id install
+}
+
+# array_sizes INDEX... — the preflight of these drives as one new array:
+# ARRAY_SUMMARY ("RAID 6 on 4 drives, about 48.0 TB usable") and
+# ARRAY_MIXED_NOTE when the drives differ in size. Status 1 when the helper
+# refused, its reason in HELPER_CODE and HELPER_MSG.
 array_sizes() {
   local i ids=() mixed=0
   for i in "$@"; do
     ids+=(--drive "$(disk_id "$i")")
     [ "${DISK_SIZES[$i]}" = "${DISK_SIZES[$1]}" ] || mixed=1
   done
-  raid_helper create --step=check ${RAID_LEVEL:+--level "$RAID_LEVEL"} "${ids[@]}" || array_refused
+  setup_preflight array "${ids[@]}" || return 1
   ARRAY_SUMMARY="RAID $HELPER_LEVEL on $# drives, about $(human_size "$HELPER_USABLE") usable"
   ARRAY_MIXED_NOTE=""
   [ "$mixed" = 0 ] || ARRAY_MIXED_NOTE="The drives differ in size. Each counts as the smallest ($(human_size "$HELPER_SMALLEST")), so the extra space on larger drives goes unused."
@@ -667,32 +685,53 @@ logged() {
   return "$rc"
 }
 
-# Host packages: the host assembles and mounts the array at every boot.
-array_tools_missing() { ! command -v mdadm >/dev/null 2>&1 || ! command -v mkfs.xfs >/dev/null 2>&1; }
-# ensure_array_tools ask|noask — mdadm and xfsprogs from apt, asking first
-# interactively; elsewhere the operator installs them.
-ensure_array_tools() {
-  array_tools_missing || return 0
-  command -v apt-get >/dev/null 2>&1 || abort "Building a recording array needs mdadm and xfsprogs. Install both with your distribution's package manager, then re-run."
+# ensure_mdadm ask|noask|warn — the host's mdadm, which assembles an array at
+# every boot, through the helper's prereq step (host apt). ask: asks first;
+# warn: an install with no drive, which leaves a host without apt alone and
+# only warns on a failure (setting up an array in the app installs it then).
+ensure_mdadm() {
+  command -v mdadm >/dev/null 2>&1 && return 0
+  if [ "$1" = warn ] && ! command -v apt-get >/dev/null 2>&1; then return 0; fi
   if [ "$1" = ask ]; then
     local ans=""
     status_stop
-    printf '%b' "Building the array needs mdadm and xfsprogs, which aren't installed. Install them with apt? [Y/n] " > /dev/tty
+    printf '%b' "Building the array needs mdadm, which isn't installed. Install it with apt? [Y/n] " > /dev/tty
     read -r ans < /dev/tty || abort "Not confirmed — cancelled."
-    case "$ans" in ''|[yY]|[yY][eE][sS]) ;; *) abort "mdadm and xfsprogs are needed to build an array. Install them, then re-run." ;; esac
+    case "$ans" in ''|[yY]|[yY][eE][sS]) ;; *) abort "mdadm is needed to build an array. Install it, then re-run." ;; esac
   fi
-  step "Installing mdadm and xfsprogs"
-  DEBIAN_FRONTEND=noninteractive apt-get update >> "$LOG_FILE" 2>&1 || true
-  DEBIAN_FRONTEND=noninteractive logged apt-get install -y --no-install-recommends mdadm xfsprogs ||
-    abort "Could not install mdadm and xfsprogs (full output: $LOG_FILE). Install them yourself, then re-run."
-  array_tools_missing && abort "mdadm and xfsprogs are still missing after installing them."
-  log "Installed mdadm and xfsprogs"
+  step "Installing mdadm"
+  if raid_helper setup --step=prereq; then
+    log "Installed mdadm"
+  elif [ "$1" = warn ]; then
+    warn "Could not install mdadm: ${HELPER_MSG%.}. Setting up an array in the web app installs it then."
+  else
+    setup_refused
+  fi
 }
 
-# A plan, as ARRAY_PLAN records it: "<md uuid> <fs uuid> <level> <serial,wwn,size>...".
-PLAN_MD=""; PLAN_FS=""; PLAN_LEVEL=""; PLAN_IDS=(); ARRAY_IDX=(); CREATE_ARRAY_DEVS=(); ARRAY_MD=""
-plan_load() { read -r PLAN_MD PLAN_FS PLAN_LEVEL _rest <<< "$1"; read -ra PLAN_IDS <<< "$_rest"; }
+# A plan, as the manifest records it (docs/drive-setup.md, Manifest): ARRAY_PLAN
+# "<md uuid> <fs uuid> <level> <serial,wwn,size>..." or SINGLE_PLAN
+# "<fs uuid> xfs <serial,wwn,size>". PLAN_ACTION is the helper's action for it.
+PLAN_ACTION=""; PLAN_MD=""; PLAN_FS=""; PLAN_LEVEL=""; PLAN_IDS=(); PLAN_IDX=(); DRIVE_ARGS=(); ARRAY_MD=""
+plan_load() {
+  local rest
+  case "$1" in
+    ARRAY_PLAN=*) PLAN_ACTION=array; read -r PLAN_MD PLAN_FS PLAN_LEVEL rest <<< "${1#*=}" ;;
+    SINGLE_PLAN=*) PLAN_ACTION=single_fixed; PLAN_MD=""; PLAN_LEVEL=single; read -r PLAN_FS _ rest <<< "${1#*=}" ;;
+  esac
+  read -ra PLAN_IDS <<< "$rest"
+}
 plan_args() { local id; for id in "${PLAN_IDS[@]}"; do printf -- '--drive\n%s\n' "$id"; done; }
+
+# current_plan — the manifest's current plan record (docs/drive-setup.md,
+# Generations): the last ARRAY_PLAN, SINGLE_PLAN or DRIVE_PLAN, unless a
+# RETIRED record with its fs UUID follows it.
+current_plan() {
+  [ -f "$MANIFEST_FILE" ] || return 0
+  awk '/^(ARRAY|SINGLE|DRIVE)_PLAN=/ { p = $0; split(substr($0, index($0, "=") + 1), a, " "); g = ($0 ~ /^ARRAY/) ? a[2] : a[1] }
+    /^RETIRED=/ && p != "" && substr($0, 9) == g { p = "" }
+    END { if (p != "") print p }' "$MANIFEST_FILE"
+}
 
 # array_refuse LINE... — the non-interactive refusal: one line per drive on stderr.
 array_refuse() {
@@ -706,62 +745,61 @@ array_refuse() {
   exit 1
 }
 
-# plan_resolve — PLAN_IDS resolved to the disks that carry them now (ARRAY_IDX),
+# plan_resolve — PLAN_IDS resolved to the disks that carry them now (PLAN_IDX),
 # or a stop naming the missing drive.
 plan_resolve() {
   local id i
-  ARRAY_IDX=()
+  PLAN_IDX=()
   for id in "${PLAN_IDS[@]}"; do
-    i="$(disk_by_id "$id")" || abort "The recording array's drives aren't all here: planned drive ${id%%,*} missing. Reconnect it, then re-run."
-    ARRAY_IDX+=("$i")
+    i="$(disk_by_id "$id")" || abort "A drive an earlier install started setting up for recording isn't here: planned drive ${id%%,*} missing. Reconnect it, then re-run."
+    PLAN_IDX+=("$i")
   done
 }
 
-# plan_match_args — on a resume, --create-array's disks must be exactly the
-# plan's; the plan's level wins over --raid-level.
+# plan_match_args FLAG — on a resume, FLAG's disks (DRIVE_ARGS) must be exactly
+# the plan's; an array plan's level wins over --raid-level.
 plan_match_args() {
   local a i lines=()
   [ -z "$RAID_LEVEL" ] || [ "$RAID_LEVEL" = "$PLAN_LEVEL" ] ||
     warn "--raid-level $RAID_LEVEL is ignored: the recording array an earlier install started is RAID $PLAN_LEVEL, and it's finished at that level."
-  for a in "${CREATE_ARRAY_DEVS[@]}"; do
-    case " ${ARRAY_IDX[*]} " in *" ${a##*=} "*) ;; *) lines+=("${a%=*}: not_planned: isn't one of the drives an earlier install started the recording array on") ;; esac
+  for a in "${DRIVE_ARGS[@]}"; do
+    case " ${PLAN_IDX[*]} " in *" ${a##*=} "*) ;; *) lines+=("${a%=*}: not_planned: isn't one of the drives an earlier install started setting up for recording") ;; esac
   done
-  for i in "${!ARRAY_IDX[@]}"; do
-    case " ${CREATE_ARRAY_DEVS[*]} " in *"=${ARRAY_IDX[$i]} "*) ;; *) lines+=("/dev/${DISK_NAMES[${ARRAY_IDX[$i]}]}: not_planned: planned drive ${PLAN_IDS[$i]%%,*} missing from --create-array") ;; esac
+  for i in "${!PLAN_IDX[@]}"; do
+    case " ${DRIVE_ARGS[*]} " in *"=${PLAN_IDX[$i]} "*) ;; *) lines+=("/dev/${DISK_NAMES[${PLAN_IDX[$i]}]}: not_planned: planned drive ${PLAN_IDS[$i]%%,*} missing from $1") ;; esac
   done
   [ "${#lines[@]}" = 0 ] || array_refuse "${lines[@]}"
 }
 
-# resolve_create_array — --create-array's disks as "ARG=index" in
-# CREATE_ARRAY_DEVS; refuses a path that isn't a whole disk or names one twice.
-resolve_create_array() {
-  local a p n i lines=() seen=" "
-  CREATE_ARRAY_DEVS=()
-  IFS=, read -ra _args <<< "$CREATE_ARRAY"
-  for a in "${_args[@]}"; do
+# resolve_drive_args LIST — LIST's comma-separated disks as "ARG=index" in
+# DRIVE_ARGS; refuses a path that isn't a whole disk or names one twice.
+resolve_drive_args() {
+  local a p n i lines=() seen=" " args=()
+  DRIVE_ARGS=()
+  IFS=, read -ra args <<< "$1"
+  for a in "${args[@]}"; do
     if ! p="$(realpath -e -- "$a" 2>/dev/null)"; then lines+=("$a: not_found: no such device"); continue; fi
     n="${p#/dev/}"
     if ! i="$(disk_index "$n")"; then lines+=("$a: not_a_disk: isn't a whole disk"); continue; fi
     case "$seen" in *" $i "*) lines+=("$a: duplicate: names a drive already listed"); continue ;; esac
     seen+="$i "
-    CREATE_ARRAY_DEVS+=("$a=$i")
+    DRIVE_ARGS+=("$a=$i")
   done
   [ "${#lines[@]}" = 0 ] || array_refuse "${lines[@]}"
 }
 
-# array_check_blank INDEX... — the helper's scan found every drive eligible,
-# else the refusal (non-interactive) or a stop naming each drive and its first
-# reason.
-array_check_blank() {
+# drives_eligible INDEX... — the helper's scan found every drive eligible to be
+# formatted, else the refusal (--create-array, --format-drive) naming each drive
+# and its first reason. Preflight judges them again, but a drive with no identity
+# can't even be named to it.
+drives_eligible() {
   local i code lines=()
   for i in "$@"; do
     read -r code _ <<< "${DISK_REASONS[$i]}"
     [ -n "$code" ] || continue
     lines+=("$(drive_arg "${DISK_NAMES[$i]}"): $code: $(reason_text "$code" "${DISK_SIGS[$i]}")")
   done
-  [ "${#lines[@]}" = 0 ] && return 0
-  [ -n "$CREATE_ARRAY" ] && array_refuse "${lines[@]}"
-  abort "Can't build the recording array:$(printf '\n  %s' "${lines[@]}")"
+  [ "${#lines[@]}" = 0 ] || array_refuse "${lines[@]}"
 }
 
 # array_append FILE LINE — append LINE unless that exact line is already there.
@@ -772,42 +810,54 @@ array_append() {
 }
 manifest_record_once() { manifest_has "$1" || manifest_add "$1"; }
 
-# array_create — checkpoint 1: the plan, then the helper's create (or resume),
-# then CREATED_ARRAY. Leaves the array's kernel name in ARRAY_MD.
-array_create() {
-  local u ids=()
-  step "Creating the recording array"
+# setup_step --step=STEP [ARG...] — one setup step on the plan; a refusal stops
+# the install.
+setup_step() {
+  local ids=()
   mapfile -t ids < <(plan_args)
-  if [ -z "$PLAN_MD" ]; then
-    # Checked again under the lock before the plan is written.
-    raid_helper create --step=check ${RAID_LEVEL:+--level "$RAID_LEVEL"} "${ids[@]}" || array_refused
-    u="$(tr -d - < /proc/sys/kernel/random/uuid)"
-    PLAN_MD="${u:0:8}:${u:8:8}:${u:16:8}:${u:24:8}"
-    PLAN_FS="$(cat /proc/sys/kernel/random/uuid)"
-    PLAN_LEVEL="$HELPER_LEVEL"
-    manifest_add "ARRAY_PLAN=$PLAN_MD $PLAN_FS $PLAN_LEVEL ${PLAN_IDS[*]}"
-  fi
-  raid_helper create --step=array --md-uuid "$PLAN_MD" --fs-uuid "$PLAN_FS" --level "$PLAN_LEVEL" "${ids[@]}" || array_refused
-  ARRAY_MD="$HELPER_DEVICE"
-  manifest_record_once "CREATED_ARRAY=$PLAN_MD"
-  log "Recording array /dev/$ARRAY_MD running (RAID $PLAN_LEVEL, ${#PLAN_IDS[@]} drives)"
+  raid_helper setup "$1" --action "$PLAN_ACTION" --level "$PLAN_LEVEL" ${PLAN_MD:+--md-uuid "$PLAN_MD"} --fs-uuid "$PLAN_FS" \
+    "${ids[@]}" "${@:2}" || setup_refused
 }
 
-# array_format — checkpoint 2: the helper formats the array, or finds the
-# filesystem an earlier run made (docs/raid.md, Installer checkpoints).
-array_format() {
-  local ids=()
-  step "Formatting the recording array"
-  mapfile -t ids < <(plan_args)
-  raid_helper create --step=format --md-uuid "$PLAN_MD" --fs-uuid "$PLAN_FS" --level "$PLAN_LEVEL" "${ids[@]}" || array_refused
-  # The host's udev learns the new filesystem's UUID before mount -U looks for it.
-  udevadm settle 2>/dev/null || true
-  if [ "$HELPER_ACTION" = kept ]; then
-    log "The recording array is already formatted"
-    return 0
+# provision — the plan's drives set up by the helper in Callers' order (plan,
+# array, format, config, mount), each step resuming by its own rows, so a run
+# after a crash finishes what an earlier one started. A new plan's UUIDs are
+# generated here, once; the helper records everything it provisions.
+provision() {
+  local u what="recording drive"
+  [ "$PLAN_ACTION" != array ] || what="recording array"
+  manifest_start
+  if [ -z "$PLAN_FS" ]; then
+    if [ "$PLAN_ACTION" = array ]; then
+      u="$(tr -d - < /proc/sys/kernel/random/uuid)"
+      PLAN_MD="${u:0:8}:${u:8:8}:${u:16:8}:${u:24:8}"
+    fi
+    PLAN_FS="$(cat /proc/sys/kernel/random/uuid)"
   fi
-  manifest_add "ARRAY_FS=$PLAN_FS"
-  log "Formatted the recording array (XFS)"
+  if [ "$PLAN_ACTION" = array ]; then
+    step "Creating the recording array"
+    setup_step --step=plan
+    setup_step --step=array
+    ARRAY_MD="$HELPER_DEVICE"
+    log "Recording array /dev/$ARRAY_MD running (RAID $PLAN_LEVEL, ${#PLAN_IDS[@]} drives)"
+    step "Formatting the recording array"
+  else
+    step "Formatting the recording drive"
+    setup_step --step=plan
+  fi
+  setup_step --step=format
+  if [ "$HELPER_ACTION" = kept ]; then log "The $what is already formatted"; else log "Formatted the $what (XFS)"; fi
+  # The host's udev learns the new filesystem's UUID before its mount unit waits for it.
+  udevadm settle 2>/dev/null || true
+  step "Setting the $what to mount at boot"
+  setup_step --step=config
+  case " $HELPER_WARNINGS " in *" initramfs_failed "*)
+    warn "update-initramfs failed (full output: $LOG_FILE), so the initramfs may not list the recording array. Free space in /boot if it's full, then run: update-initramfs -u" ;;
+  esac
+  case " $HELPER_WARNINGS " in *" no_update_initramfs "*) warn "update-initramfs not found, so the initramfs keeps its old copy of $MDADM_CONF." ;; esac
+  step "Mounting the $what"
+  setup_step --step=mount --op-id install
+  log "Mounted the $what at $MOUNT_PATH"
 }
 
 # array_boot_config MD_UUID LINE [nounit] — the array's mdadm.conf LINE unless a
@@ -851,16 +901,6 @@ array_boot_config() {
   systemctl daemon-reload
   systemctl enable "$ARRAY_UNIT" || abort "Could not enable $ARRAY_UNIT."
   log "The recording array starts at boot, with a drive missing if need be"
-}
-
-# array_config — checkpoint 3: boot assembly, the degraded-start unit and the
-# fstab line.
-array_config() {
-  array_boot_config "$PLAN_MD" "ARRAY /dev/md/vsnvr metadata=1.2 UUID=$PLAN_MD"
-  FSTAB_MOUNT_LINE="UUID=$PLAN_FS $MOUNT_PATH xfs $ARRAY_FSTAB_OPTS 0 0"
-  array_append /etc/fstab "$FSTAB_MOUNT_LINE" || abort "Could not add the recording array to /etc/fstab."
-  manifest_record_once "FSTAB_LINE=$FSTAB_MOUNT_LINE"
-  systemctl daemon-reload
 }
 
 # md_uuid MD — the UUID of md array MD (its kernel name, metadata 1.x; 0.90's
@@ -921,10 +961,11 @@ adopt_array_boot() {
 }
 
 # pick_recording_drive — interactive level-B picker: choose an EXISTING formatted
-# filesystem to mount at $MOUNT_PATH, or combine every blank drive into one array.
-# Selection + safety checks ONLY; the actual mount or build happens later, after
-# the sidecar downloads. Sets SELECTED_DEV / SELECTED_UUID / SELECTED_FSTYPE,
-# or ARRAY_PICKED and PLAN_IDS. Never formats a drive that carries anything.
+# filesystem to mount at $MOUNT_PATH, combine every blank drive into one array,
+# or leave the drive to the web app. Selection + safety checks ONLY; the actual
+# mount or build happens later, after the sidecar downloads. Sets SELECTED_DEV /
+# SELECTED_UUID / SELECTED_FSTYPE, ARRAY_PICKED and PLAN_IDS, or UNBOUND. Never
+# formats a drive that carries anything.
 pick_recording_drive() {
   command -v lsblk >/dev/null 2>&1 || abort "lsblk not found (install util-linux) — needed to list drives, or mount the drive yourself and pass --recording-mount."
 
@@ -970,12 +1011,14 @@ pick_recording_drive() {
   else
     warn "Couldn't check the drives for building an array: ${HELPER_MSG%.}. Offering existing filesystems and reserved space only."
   fi
-  if [ "${#blank[@]}" -ge 2 ]; then
-    array_sizes "${blank[@]}"
+  # A refusal there (the host or a drive) leaves the other rows.
+  if [ "${#blank[@]}" -ge 2 ] && ! array_sizes "${blank[@]}"; then
+    tty_say "Note: the blank drives can't be combined into an array: ${HELPER_MSG%.}."
+  elif [ "${#blank[@]}" -ge 2 ]; then
     array_row="${#rows[@]}"
     rows+=("Combine ${#blank[@]} blank drives into one array"); details+=("$ARRAY_SUMMARY")
   elif [ "${#blank[@]}" = 1 ]; then
-    tty_say "Note: /dev/${DISK_NAMES[${blank[0]}]} is blank. VS NVR combines two or more blank drives into an array. To record to this one alone, format it yourself first."
+    tty_say "Note: /dev/${DISK_NAMES[${blank[0]}]} is blank. VS NVR combines two or more blank drives into an array. To record to this one alone, choose it in the web app after installing."
   fi
 
   # The last row records to space reserved on the system disk instead: a new
@@ -991,7 +1034,13 @@ pick_recording_drive() {
     reserve=new
     rows+=("Reserve space on the system disk"); details+=("Up to $reserve_max GB")
   fi
-  [ "${#rows[@]}" -gt 0 ] || abort "No drive to record to was found, and the system disk doesn't have room to reserve $RESERVE_MIN_GB GB (plus 10% of it, at least 20 GB, left free). Attach and format a drive, attach two or more blank drives to combine into an array, or free up space, then re-run."
+  if [ "${#rows[@]}" = 0 ]; then
+    tty_say "Note: there's nothing the installer can record to here, and the system disk doesn't have room to reserve $RESERVE_MIN_GB GB (plus 10% of it, at least 20 GB, left free). VS NVR installs without a recording drive: choose one in the web app afterwards."
+    UNBOUND=1
+    return 0
+  fi
+  local later="${#rows[@]}"
+  rows+=("Choose a drive in the web app later"); details+=("Installs without one. Nothing is recorded until a drive is chosen.")
 
   ask_title "Where should VS NVR record?" "What you pick is mounted at $MOUNT_PATH. An existing filesystem is not erased."
   [ "${#devs[@]}" -eq 0 ] || tty_say "${GRAY}$(printf '      %-14s %-8s %-6s %-16s %s' 'DEVICE' 'SIZE' 'FS' 'LABEL' 'MODEL')${NC}"
@@ -1001,7 +1050,10 @@ pick_recording_drive() {
   ask_number "${#rows[@]}" "" "$prompt"
 
   idx=$((CHOICE - 1))
-  if [ "$idx" -lt "${#devs[@]}" ]; then
+  if [ "$idx" = "$later" ]; then
+    UNBOUND=1
+    return 0
+  elif [ "$idx" -lt "${#devs[@]}" ]; then
     SELECTED_DEV="${devs[$idx]}"; SELECTED_UUID="${uuids[$idx]}"; SELECTED_FSTYPE="${fstypes[$idx]}"
   elif [ "$idx" = "$array_row" ]; then
     ARRAY_PICKED=1
@@ -1019,6 +1071,8 @@ pick_recording_drive() {
 
   if [ -n "$ARRAY_PICKED" ]; then
     [ "${#blank[@]}" -lt 4 ] || pick_array_level "${blank[@]}"
+    # The row's preflight gave the level for fewer drives.
+    PLAN_LEVEL="${RAID_LEVEL:-$HELPER_LEVEL}"
     ask_title "About to build the recording array from these blank drives:"
     describe_array "${blank[@]}"
     tty_say "  • They are formatted into one array, MOUNTED at $MOUNT_PATH and persisted to /etc/fstab (nofail)."
@@ -1028,7 +1082,7 @@ pick_recording_drive() {
     printf '%b' "  Type 'yes' to confirm: " > /dev/tty
     read -r yn < /dev/tty || abort "Not confirmed — cancelled."
     [ "$yn" = "yes" ] || abort "Not confirmed — cancelled."
-    PLAN_IDS=(); for b in "${blank[@]}"; do PLAN_IDS+=("$(disk_id "$b")"); done
+    PLAN_ACTION=array; PLAN_IDS=(); for b in "${blank[@]}"; do PLAN_IDS+=("$(disk_id "$b")"); done
     return 0
   fi
 
@@ -1071,7 +1125,7 @@ pick_recording_drive() {
 # Leaves RAID_LEVEL and ARRAY_SUMMARY on the choice.
 pick_array_level() {
   local six="$ARRAY_SUMMARY" six_bytes="$HELPER_USABLE"
-  RAID_LEVEL=5; array_sizes "$@"
+  RAID_LEVEL=5; array_sizes "$@" || setup_refused
   ask_title "Which RAID level?"
   ask_option 1 "RAID 6 (default)" "About $(human_size "$six_bytes") usable. Any 2 drives can fail."
   ask_option 2 "RAID 5" "About $(human_size "$HELPER_USABLE") usable. Any 1 drive can fail."
@@ -1216,15 +1270,12 @@ manifest_add() { # manifest_add RECORD — append one verbatim record (fresh ins
 }
 manifest_has() { grep -qxF "$1" "$MANIFEST_FILE" 2>/dev/null; }
 
-MOUNT_PLAN=none          # none = already mounted / rerun; mount = picker mounts; adopt = re-claim an existing VS NVR mount
+MOUNT_PLAN=none          # none = already mounted / rerun / no drive; mount = picker mounts; adopt = re-claim an existing VS NVR mount; setup = the RAID helper sets up the plan
 SELECTED_DEV=""; SELECTED_UUID=""; SELECTED_FSTYPE=""
 RESERVE=""; RESERVE_GB=""; NEW_IMAGE=""   # RESERVE: new | kept, when recording to reserved space
 ADOPT_UUID=""; ADOPT_FSTAB_LINE=""
 ARRAY_PICKED=""
-# A fresh install an earlier run of which started building the recording array
-# finishes that array (docs/raid.md, Installer checkpoints).
-PLAN_LINE=""
-if [ "$RERUN" = false ] && [ -f "$MANIFEST_FILE" ]; then PLAN_LINE="$(sed -n 's/^ARRAY_PLAN=//p' "$MANIFEST_FILE" | head -n1)"; fi
+UNBOUND=""               # 1: finishes with no recording drive, chosen in the web app later
 
 if [ "$RERUN" = true ]; then
   # Preserve the existing recording location; an explicit change is a migration
@@ -1260,58 +1311,105 @@ check_recording_parent() {
   fi
 }
 
-if [ "$RERUN" = true ] && [ -n "$CREATE_ARRAY" ]; then
-  # A finished install: a no-op when its own array is what it records to.
-  created="$(sed -n 's/^CREATED_ARRAY=//p' "$MANIFEST_FILE" 2>/dev/null | tail -n1 || true)"
+# mount_configured — something is set to mount at $MOUNT_PATH: an fstab entry, or
+# a systemd mount unit for it (as attest-mount.sh asks).
+mount_configured() {
+  findmnt --fstab --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 && return 0
+  command -v systemctl >/dev/null 2>&1 &&
+    [ "$(systemctl show -p LoadState --value "$(systemd-escape --path --suffix=mount "$MOUNT_PATH")" 2>/dev/null)" = loaded ]
+}
+
+# A finished install: --create-array or --format-drive is a no-op when what it
+# names is what this install records to.
+if [ "$RERUN" = true ] && [ -n "$CREATE_ARRAY$FORMAT_DRIVE" ]; then
+  _plan="$(current_plan)"
+  plan_load "$_plan"
   src="$(findmnt -no SOURCE --mountpoint "$MOUNT_PATH" 2>/dev/null || true)"
-  { [ -n "$created" ] && [ -n "$src" ] && [ "$(md_uuid "$(basename "$(realpath "$src")")")" = "$created" ]; } ||
-    abort "This box is already installed, and $MOUNT_PATH isn't the recording array it built. Re-run without --create-array."
-  read -r _ _ built_level _ <<< "$(sed -n 's/^ARRAY_PLAN=//p' "$MANIFEST_FILE" | head -n1)"
-  [ -z "$RAID_LEVEL" ] || [ "$RAID_LEVEL" = "$built_level" ] ||
-    warn "--raid-level $RAID_LEVEL is ignored: the recording array this install built is RAID $built_level."
+  if [ -n "$CREATE_ARRAY" ]; then
+    { [ "$PLAN_ACTION" = array ] && [ -n "$src" ] && [ "$(md_uuid "$(basename "$(realpath "$src")")")" = "$PLAN_MD" ]; } ||
+      abort "This box is already installed, and $MOUNT_PATH isn't the recording array it built. Re-run without --create-array."
+    [ -z "$RAID_LEVEL" ] || [ "$RAID_LEVEL" = "$PLAN_LEVEL" ] ||
+      warn "--raid-level $RAID_LEVEL is ignored: the recording array this install built is RAID $PLAN_LEVEL."
+  else
+    { [ "${_plan%%=*}" = SINGLE_PLAN ] && [ -n "$src" ] && [ "$(lsblk -dprno UUID "$src" 2>/dev/null)" = "$PLAN_FS" ] &&
+      [ "$(realpath "$src")" = "$(realpath -e -- "$FORMAT_DRIVE" 2>/dev/null)" ]; } ||
+      abort "This box is already installed, and $MOUNT_PATH isn't $FORMAT_DRIVE formatted by it. Re-run without --format-drive."
+  fi
 fi
 
-# A choice that needs the drive list waits for the image (DRIVE_STEP, after the
-# download): the RAID helper, run from that image, is what lists the drives.
-DRIVE_STEP=""
-if [ -n "$CHECK_DRIVE" ]; then
-  DRIVE_STEP=check_drive
-elif [ -n "$PLAN_LINE" ]; then
-  [ -z "$RECORDING_MOUNT" ] || abort "An earlier install started building the recording array. Re-run without --recording-mount to finish it."
-  plan_load "$PLAN_LINE"
-  if findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
-    src="$(findmnt -no SOURCE --mountpoint "$MOUNT_PATH")"
-    [ "$(lsblk -dprno UUID "$src" 2>/dev/null)" = "$PLAN_FS" ] ||
-      abort "$MOUNT_PATH has something other than the recording array an earlier install started mounted on it. Unmount it, then re-run."
+# choose_drive — where to record, decided before the downloads. A choice that
+# needs the drive list waits for the image (DRIVE_STEP, after the download): the
+# RAID helper, run from that image, is what lists the drives.
+choose_drive() {
+  DRIVE_STEP=""
+  # A fresh install an earlier run of which started building the recording array
+  # or formatting the stick's drive finishes it (docs/drive-setup.md, Installer
+  # and USB stick).
+  # A DRIVE_PLAN is an ext4 drive set up before XFS, never resumed.
+  PLAN_LINE=""
+  if [ "$RERUN" = false ]; then
+    PLAN_LINE="$(current_plan)"
+    case "$PLAN_LINE" in ARRAY_PLAN=*|SINGLE_PLAN=*) ;; *) PLAN_LINE="" ;; esac
   fi
-  check_recording_parent
-  DRIVE_STEP=resume
-elif [ "$RERUN" = false ] && [ -n "$CREATE_ARRAY" ]; then
-  ! findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 || abort "$MOUNT_PATH is already mounted. --create-array mounts the new array there. Unmount it, then re-run."
-  IFS=, read -ra _args <<< "$CREATE_ARRAY"
-  [ "${#_args[@]}" -ge 2 ] || abort "--create-array needs at least two drives, comma-separated (got: $CREATE_ARRAY)."
-  check_mount_target
-  check_recording_parent
-  DRIVE_STEP=create_array
-elif findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
-  # Already mounted (a rerun, the operator mounted it themselves, or a prior VS NVR
-  # install's fstab entry auto-mounted it): use as-is, never mounting anything. On a
-  # fresh install, re-adopt a mount a prior VS NVR install left behind.
-  log "Recording drive is already mounted at $MOUNT_PATH (parent: $RECORDING_PATH)"
-  if ! mountpoint -q "$RECORDING_PATH" && ! findmnt -no PROPAGATION --target "$RECORDING_PATH" 2>/dev/null | grep -q shared; then
-    abort "$RECORDING_PATH does not propagate mounts, so preparing it for drive recovery would hide the drive already mounted at $MOUNT_PATH. Unmount it and re-run from a terminal to pick the drive, or make the mount holding $RECORDING_PATH shared first (mount --make-rshared /)."
+  if [ -n "$PLAN_LINE" ]; then
+    plan_load "$PLAN_LINE"
+    [ -z "$RECORDING_MOUNT" ] || abort "An earlier install started setting up the recording drive. Re-run without --recording-mount to finish it."
+    if [ "$PLAN_ACTION" = array ]; then
+      [ -z "$FORMAT_DRIVE" ] || abort "An earlier install started building the recording array. Re-run without --format-drive to finish it."
+    else
+      [ -z "$CREATE_ARRAY" ] || abort "An earlier install started formatting the recording drive. Re-run without --create-array to finish it."
+    fi
+    if findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
+      src="$(findmnt -no SOURCE --mountpoint "$MOUNT_PATH")"
+      [ "$(lsblk -dprno UUID "$src" 2>/dev/null)" = "$PLAN_FS" ] ||
+        abort "$MOUNT_PATH has something other than the recording drive an earlier install started setting up mounted on it. Unmount it, then re-run."
+    fi
+    check_recording_parent
+    DRIVE_STEP=resume
+  elif [ "$RERUN" = false ] && [ -n "$CREATE_ARRAY$FORMAT_DRIVE" ]; then
+    if [ -n "$CREATE_ARRAY" ]; then
+      ! findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 || abort "$MOUNT_PATH is already mounted. --create-array mounts the new array there. Unmount it, then re-run."
+      IFS=, read -ra _args <<< "$CREATE_ARRAY"
+      [ "${#_args[@]}" -ge 2 ] || abort "--create-array needs at least two drives, comma-separated (got: $CREATE_ARRAY)."
+      DRIVE_STEP=create_array
+    else
+      ! findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 || abort "$MOUNT_PATH is already mounted. --format-drive mounts the drive there. Unmount it, then re-run."
+      DRIVE_STEP=format_drive
+    fi
+    check_mount_target
+    check_recording_parent
+  elif findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
+    # Already mounted (a rerun, the operator mounted it themselves, or a prior VS NVR
+    # install's fstab entry auto-mounted it): use as-is, never mounting anything. On a
+    # fresh install, re-adopt a mount a prior VS NVR install left behind.
+    log "Recording drive is already mounted at $MOUNT_PATH (parent: $RECORDING_PATH)"
+    if ! mountpoint -q "$RECORDING_PATH" && ! findmnt -no PROPAGATION --target "$RECORDING_PATH" 2>/dev/null | grep -q shared; then
+      abort "$RECORDING_PATH does not propagate mounts, so preparing it for drive recovery would hide the drive already mounted at $MOUNT_PATH. Unmount it and re-run from a terminal to pick the drive, or make the mount holding $RECORDING_PATH shared first (mount --make-rshared /)."
+    fi
+    if [ "$RERUN" = false ]; then stage_mount_adoption; fi
+  elif [ "$RERUN" = false ] && [ "$TTY_OK" = 1 ] && [ -z "$RECORDING_MOUNT" ]; then
+    # Nothing mounted at the default target and we have a terminal: the picker,
+    # once the image is here. It selects + safety-checks a drive; the mount itself
+    # is deferred (see below).
+    check_mount_target
+    check_recording_parent
+    DRIVE_STEP=picker
+  elif [ -n "$RECORDING_MOUNT" ]; then
+    abort "$MOUNT_PATH is not a mounted drive. Mount your recording drive there first, then re-run, or leave out --recording-mount to install without a recording drive."
+  elif mount_configured; then
+    abort "$MOUNT_PATH is set to mount a recording drive (in /etc/fstab or a systemd mount unit), but nothing is mounted there. Connect the drive or fix its mount, then re-run."
+  elif [ "$RERUN" = true ] && [ -n "$(current_plan)" ]; then
+    abort "A recording drive setup is unfinished. Finish or abandon it under Settings > Recording, then re-run."
+  else
+    # No recording drive (docs/drive-setup.md, Installer and USB stick): the box
+    # finishes unbound, and the owner chooses a drive in the web app. A re-run keeps
+    # the recorded location and provisions nothing.
+    check_recording_parent
+    UNBOUND=1
+    log "No recording drive: VS NVR installs without one, and a drive is chosen in the web app afterwards"
   fi
-  if [ "$RERUN" = false ]; then stage_mount_adoption; fi
-elif [ "$RERUN" = false ] && [ "$TTY_OK" = 1 ] && [ -z "$RECORDING_MOUNT" ]; then
-  # Nothing mounted at the default target and we have a terminal: the picker,
-  # once the image is here. It selects + safety-checks a drive; the mount itself
-  # is deferred (see below).
-  check_mount_target
-  check_recording_parent
-  DRIVE_STEP=picker
-else
-  abort "$MOUNT_PATH is not a mounted drive. Mount your recording drive there first, then re-run — or run interactively (from a terminal) to pick a drive, or pass --create-array with the blank drives to combine. (A public install that records nothing is worse than a clear stop.)"
-fi
+}
+choose_drive
 
 if [ "$DOCKER_MISSING" = 1 ]; then
   install_docker
@@ -1448,65 +1546,65 @@ log "Downloaded VS NVR"
 
 # ── Choosing the recording drive, with the RAID helper from that image ──
 case "$DRIVE_STEP" in
-  check_drive)
-    # The USB stick's single drive (setup-nvr.sh): its identity, and the first
-    # reason the helper's eligibility rules give against formatting it. Nothing
-    # else runs.
-    step "Checking the recording drive"
-    scan_disks
-    _id=""; _code=""; _text=""
-    if ! _p="$(realpath -e -- "$CHECK_DRIVE" 2>/dev/null)"; then _code=not_found; _text="doesn't exist"
-    elif ! _i="$(disk_index "${_p#/dev/}")"; then _code=not_a_disk; _text="isn't a whole disk"
-    else
-      _id="$(disk_id "$_i")"
-      read -r _code _ <<< "${DISK_REASONS[$_i]}"
-      [ -z "$_code" ] || _text="$(reason_text "$_code" "${DISK_SIGS[$_i]}")"
-    fi
-    [ "$COSIGN_PRESENT" = 1 ] || docker image rm "$COSIGN_IMAGE" >/dev/null 2>&1 || true
-    printf 'VSNVR_DRIVE_ID=%s\nVSNVR_DRIVE_REASON=%s\nVSNVR_DRIVE_TEXT=%s\n' "$_id" "$_code" "$_text"
-    exit 0
-    ;;
   resume)
-    step "Checking the recording array's drives"
+    step "Checking the drives an earlier install started setting up"
     scan_disks
-    if [ -n "$CREATE_ARRAY" ]; then
-      resolve_create_array
-      plan_resolve
-      plan_match_args
+    plan_resolve
+    if [ -n "$CREATE_ARRAY" ]; then resolve_drive_args "$CREATE_ARRAY"; plan_match_args --create-array; fi
+    if [ -n "$FORMAT_DRIVE" ]; then resolve_drive_args "$FORMAT_DRIVE"; plan_match_args --format-drive; fi
+    # No preflight: the drives carry the plan's own signatures.
+    [ "$PLAN_ACTION" != array ] || ensure_mdadm noask
+    if [ "$PLAN_ACTION" = array ]; then
+      log "Finishing the recording array an earlier install started (RAID $PLAN_LEVEL on drives $(for id in "${PLAN_IDS[@]}"; do printf '%s ' "${id%%,*}"; done))"
+    else
+      log "Finishing the recording drive an earlier install started formatting (serial ${PLAN_IDS[0]%%,*})"
     fi
-    mapfile -t _ids < <(plan_args)
-    raid_helper create --step=check --md-uuid "$PLAN_MD" --fs-uuid "$PLAN_FS" --level "$PLAN_LEVEL" "${_ids[@]}" || array_refused
-    ensure_array_tools noask
-    log "Finishing the recording array an earlier install started (RAID $PLAN_LEVEL on drives $(for id in "${PLAN_IDS[@]}"; do printf '%s ' "${id%%,*}"; done))"
-    MOUNT_PLAN=array
+    MOUNT_PLAN=setup
     ;;
   create_array)
     step "Checking the drives for the recording array"
     scan_disks
-    resolve_create_array
-    ARRAY_IDX=(); for a in "${CREATE_ARRAY_DEVS[@]}"; do ARRAY_IDX+=("${a##*=}"); done
-    array_check_blank "${ARRAY_IDX[@]}"
-    PLAN_IDS=(); for i in "${ARRAY_IDX[@]}"; do PLAN_IDS+=("$(disk_id "$i")"); done
-    array_sizes "${ARRAY_IDX[@]}"
-    ensure_array_tools noask
-    MOUNT_PLAN=array
+    resolve_drive_args "$CREATE_ARRAY"
+    PLAN_IDX=(); for a in "${DRIVE_ARGS[@]}"; do PLAN_IDX+=("${a##*=}"); done
+    drives_eligible "${PLAN_IDX[@]}"
+    PLAN_ACTION=array; PLAN_IDS=(); for i in "${PLAN_IDX[@]}"; do PLAN_IDS+=("$(disk_id "$i")"); done
+    array_sizes "${PLAN_IDX[@]}" || setup_refused
+    PLAN_LEVEL="$HELPER_LEVEL"
+    ensure_mdadm noask
+    MOUNT_PLAN=setup
     log "Will build the recording array ($ARRAY_SUMMARY) after the downloads"
     [ -z "$ARRAY_MIXED_NOTE" ] || warn "$ARRAY_MIXED_NOTE"
+    ;;
+  format_drive)
+    # The USB stick's single drive (setup-nvr.sh): formatted by the helper with
+    # the installer's single-drive rules (no USB), the flag being the consent.
+    step "Checking the recording drive"
+    scan_disks
+    resolve_drive_args "$FORMAT_DRIVE"
+    drives_eligible "${DRIVE_ARGS[0]##*=}"
+    PLAN_ACTION=single_fixed; PLAN_LEVEL=single; PLAN_IDS=("$(disk_id "${DRIVE_ARGS[0]##*=}")")
+    setup_preflight single_fixed --drive "${PLAN_IDS[0]}" || setup_refused
+    MOUNT_PLAN=setup
+    log "Will format $FORMAT_DRIVE (XFS) after the downloads"
     ;;
   picker)
     step "Choosing the recording drive"
     pick_recording_drive
     MOUNT_PLAN=mount
-    if [ -n "$ARRAY_PICKED" ]; then
-      ensure_array_tools ask
-      MOUNT_PLAN=array
+    if [ -n "$UNBOUND" ]; then
+      MOUNT_PLAN=none
+      log "No recording drive: choose one in the web app after installing"
+    elif [ -n "$ARRAY_PICKED" ]; then
+      ensure_mdadm ask
+      MOUNT_PLAN=setup
+      log "Will build the recording array after the downloads"
+    else
+      case "$RESERVE" in
+        new)  log "Will reserve $RESERVE_GB GB on the system disk after the downloads" ;;
+        kept) log "Will record to the kept space on the system disk after the downloads" ;;
+        *)    log "Will mount $SELECTED_DEV at $MOUNT_PATH after the downloads" ;;
+      esac
     fi
-    case "$ARRAY_PICKED$RESERVE" in
-      1)    log "Will build the recording array after the downloads" ;;
-      new)  log "Will reserve $RESERVE_GB GB on the system disk after the downloads" ;;
-      kept) log "Will record to the kept space on the system disk after the downloads" ;;
-      *)    log "Will mount $SELECTED_DEV at $MOUNT_PATH after the downloads" ;;
-    esac
     ;;
 esac
 
@@ -1571,6 +1669,17 @@ check_helpers() { # abort unless no helper is running (waiting for one first)
   [ "$rc" -ne 2 ] || abort "$HELPER_CHECK_FAILED"
   [ "$rc" -eq 0 ] || abort "An in-app update or reset is still running after 15 minutes; let it finish, then re-run."
 }
+# refuse_unfinished_setup — an unfinished recording drive setup holds a re-run,
+# as it holds an update (docs/drive-setup.md, Refusals): read with this image's
+# binary, which knows every kind; a record it can't read stops the re-run too.
+refuse_unfinished_setup() {
+  local vols hold
+  vols="$(docker volume ls --format '{{.Name}}')" || abort "Could not list Docker volumes to check for a recording drive setup (Docker daemon error)."
+  printf '%s\n' "$vols" | grep -qxF vs-nvr_vs-nvr-data || return 0
+  hold="$(docker run --rm -v vs-nvr_vs-nvr-data:/app/data:ro --network none --entrypoint /app/vs-nvr "$IMAGE_ID" --operation-hold)" ||
+    abort "Could not read the recording drive operation. Not re-running."
+  [ "$hold" != setup ] || abort "A recording drive setup is unfinished. Finish or abandon it under Settings > Recording, then re-run."
+}
 STACK_STOPPED=false
 restart_stack() { # EXIT hook: never leave a stopped install down after an abort
   [ "$STACK_STOPPED" = true ] || return 0
@@ -1604,6 +1713,8 @@ if [ "$RERUN" = true ]; then
   helper="$(running_helper)" || abort "$HELPER_CHECK_FAILED"
   [ -z "$helper" ] || abort "An in-app update or reset started while stopping the stack; let it finish, then re-run."
   log "Stack stopped"
+  # Once the stack is down, so no setup can start.
+  refuse_unfinished_setup
 fi
 
 # Tag only now: an update helper retags these same names, so tagging before the
@@ -1655,20 +1766,13 @@ fi
 # ── Mount the selected recording drive ─────────────────────────────
 # Deferred to here on purpose: the image is pulled + validated above, so a bad
 # image aborts before we mount anything or touch /etc/fstab.
-if [ "$MOUNT_PLAN" = array ]; then
-  # The helper takes the maintenance lock here for each step and checks the
-  # drives again under it, by identity, right before anything is written.
-  mkdir -p "$INSTALL_DIR"
-  array_create
-  array_format
-  array_config
-  SELECTED_DEV="/dev/$ARRAY_MD"; SELECTED_UUID="$PLAN_FS"; SELECTED_FSTYPE=xfs
-fi
-if [ "$MOUNT_PLAN" = mount ] || [ "$MOUNT_PLAN" = array ]; then
+if [ "$MOUNT_PLAN" = setup ]; then
+  # The helper takes the maintenance lock for each step and checks the drives
+  # again under it, by identity, right before anything is written.
+  provision
+elif [ "$MOUNT_PLAN" = mount ]; then
   MOUNT_OWNER_OPTS=""
-  if [ "$MOUNT_PLAN" = array ]; then
-    step "Mounting the recording array"
-  elif [ "$RESERVE" = new ]; then
+  if [ "$RESERVE" = new ]; then
     step "Reserving $RESERVE_GB GB for recordings"
     [ "$(reserve_max_gb 0)" -ge "$RESERVE_GB" ] || abort "The system disk no longer has room to reserve $RESERVE_GB GB and still leave space free. Re-run and pick a smaller size."
     [ ! -e "$RESERVE_IMAGE" ] || abort "$RESERVE_IMAGE appeared during the install. Move it away, then re-run."
@@ -1690,9 +1794,7 @@ if [ "$MOUNT_PLAN" = mount ] || [ "$MOUNT_PLAN" = array ]; then
     step "Mounting the recording drive"
   fi
   mkdir -p "$MOUNT_PATH"
-  if [ "$MOUNT_PLAN" = array ] && findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
-    log "The recording array is already mounted at $MOUNT_PATH"
-  elif [ -n "$RESERVE" ]; then
+  if [ -n "$RESERVE" ]; then
     SELECTED_UUID="$(blkid -o value -s UUID "$RESERVE_IMAGE" 2>/dev/null || true)"
     [ -n "$SELECTED_UUID" ] || abort "Could not read the filesystem UUID of $RESERVE_IMAGE."
     mount -o loop "$RESERVE_IMAGE" "$MOUNT_PATH" || abort "Failed to mount $RESERVE_IMAGE at $MOUNT_PATH."
@@ -1728,16 +1830,17 @@ if [ "$MOUNT_PLAN" = mount ] || [ "$MOUNT_PLAN" = array ]; then
     # X-fstrim.notrim: the weekly fstrim would otherwise hand the reserved free
     # blocks back to the system disk.
     FSTAB_MOUNT_LINE="$RESERVE_IMAGE $MOUNT_PATH ext4 loop,nofail,X-fstrim.notrim,$VSNVR_FSTAB_OWN_MARK 0 0"
-  elif [ "$MOUNT_PLAN" = mount ]; then
+  else
     # Persist by UUID (kernel device name is irrelevant). nofail + a bounded
     # device-timeout so an absent drive never blocks boot (attest-mount fails closed).
-    # (An array's line went in with its boot setup.) An existing array gets an
-    # array's timeout: it may start degraded about 35 s into boot.
+    # An existing array gets an array's timeout: it may start degraded about 35 s
+    # into boot.
+    # XFS has no boot-time fsck (fsck.xfs does nothing), so its pass is 0.
+    fsck_pass=2; [ "$SELECTED_FSTYPE" != xfs ] || fsck_pass=0
     if mounted_md >/dev/null; then
-      fsck_pass=2; [ "$SELECTED_FSTYPE" != xfs ] || fsck_pass=0
       FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $ARRAY_FSTAB_OPTS${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 $fsck_pass"
     else
-      FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $VSNVR_FSTAB_OPTS${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 2"
+      FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $VSNVR_FSTAB_OPTS${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 $fsck_pass"
     fi
   fi
   if grep -qxF "$FSTAB_MOUNT_LINE" /etc/fstab 2>/dev/null; then
@@ -1759,18 +1862,24 @@ elif [ "$MOUNT_PLAN" = adopt ]; then
   manifest_record_once "FSTAB_LINE=$ADOPT_FSTAB_LINE"
   log "Recorded the existing $MOUNT_PATH mount as installer-owned (uninstall will reverse it)"
 fi
-if [ "$RERUN" = false ] && [ "$MOUNT_PLAN" != array ]; then adopt_array_boot; fi
+if [ "$RERUN" = false ] && [ "$MOUNT_PLAN" != setup ]; then adopt_array_boot; fi
+# With no drive, an apt host gets mdadm now, so an array chosen in the web app
+# later assembles at boot before the app runs (docs/drive-setup.md, Installer and
+# USB stick).
+if [ "$RERUN" = false ] && [ -n "$UNBOUND" ]; then ensure_mdadm warn; fi
 
 # ── Recover a drive that is unplugged and plugged back in ──────────
 # On a yank the NVR still holds files open, so systemd's umount of the dead drive
 # fails busy, and a nofail fstab mount is only started at boot: the reconnected
 # drive was never mounted. Lazy unmount detaches the dead filesystem at once; the
 # drive's device unit wanting the mount mounts it again (after fsck) when it
-# reappears. Only for a mount the manifest owns (picker, adopted, or setup-nvr.sh),
-# and rewritten on a rerun so an existing install gets it too, but not for
-# reserved space, which can't be unplugged. uninstall.sh removes both drop-ins
-# with the mount.
-if grep -qxF "CREATED_MOUNT=$MOUNT_PATH" "$MANIFEST_FILE" 2>/dev/null && ! grep -q '^CREATED_IMAGE=' "$MANIFEST_FILE"; then
+# reappears. Only for a mounted drive the manifest owns (picker, adopted,
+# setup-nvr.sh, or the RAID helper in an earlier run: its config step writes the
+# same two files, so a drive it set up in this one has them), and rewritten
+# on a rerun so an existing install gets it too, but not for reserved space,
+# which can't be unplugged. uninstall.sh removes both drop-ins with the mount.
+if [ "$MOUNT_PLAN" != setup ] && grep -qxF "CREATED_MOUNT=$MOUNT_PATH" "$MANIFEST_FILE" 2>/dev/null &&
+  ! grep -q '^CREATED_IMAGE=' "$MANIFEST_FILE" && findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1; then
   replug_uuid="$(lsblk -dprno UUID "$(findmnt -no SOURCE --mountpoint "$MOUNT_PATH")" 2>/dev/null || true)"
   mount_unit="$(systemd-escape --path --suffix=mount "$MOUNT_PATH")"
   mount_dropin="/etc/systemd/system/$mount_unit.d"
@@ -1810,19 +1919,7 @@ install -d -m 0755 "$INSTALL_DIR/vs-hardware"
 # Minimal by design. No SITE_MANAGER_URL (compiled in) and NEVER
 # RECORDING_VOLUME_ATTESTED (see docker-compose.yml).
 
-# The isolated mediadc sidecar advertises the box's reachable IP as its WebRTC host
-# candidate (it sees only the container IP from its bridge). Detect the primary
-# source IP. Off-LAN viewers get the router's external IP from the UPnP/NAT-PMP
-# mapping; without one, forward UDP 8556 and set this to the public IP instead.
-detect_advertise_ip() {
-  local ip
-  ip="${MEDIA_DC_ADVERTISE_IP:-$(primary_ip)}"
-  [ -n "$ip" ] || warn "Could not detect this box's IP. The mediadc sidecar (remote playback) will not start until MEDIA_DC_ADVERTISE_IP is set in $INSTALL_DIR/.env." >&2
-  printf '%s' "$ip"
-}
-
 if [ "$RERUN" = false ]; then
-  MEDIA_DC_ADVERTISE_IP_DETECTED="$(detect_advertise_ip)"
   cat > "$INSTALL_DIR/.env" <<EOF
 # Parent bound into the container as /mnt (rshared); the recording drive mounts
 # beneath it at /mnt/recordings. Never add RECORDING_VOLUME_ATTESTED here: it is
@@ -1830,8 +1927,6 @@ if [ "$RERUN" = false ]; then
 RECORDING_PATH=$RECORDING_PATH
 HOST_COMPOSE_DIR=$INSTALL_DIR
 UPDATE_URL=${UPDATE_URL_ARG:-$UPDATE_URL_DEFAULT}
-# Box IP the isolated mediadc sidecar advertises as its WebRTC host candidate.
-MEDIA_DC_ADVERTISE_IP=$MEDIA_DC_ADVERTISE_IP_DETECTED
 EOF
   if has_intel_gpu; then
     # Lets AI decode and detection use the GPU (Settings > Hardware turns it off).
@@ -1845,17 +1940,7 @@ EOF
   fi
   log "Wrote $INSTALL_DIR/.env"
 else
-  # Preserve the operator's .env; only fill in a missing or empty
-  # MEDIA_DC_ADVERTISE_IP (the sidecar fails fast without one; never clobber an
-  # override) and, if asked, update the update URL.
-  if [ -z "$(env_value MEDIA_DC_ADVERTISE_IP "$INSTALL_DIR/.env")" ]; then
-    ip="$(detect_advertise_ip)"
-    if [ -n "$ip" ] && grep -qE '^[[:space:]]*MEDIA_DC_ADVERTISE_IP[[:space:]]*=' "$INSTALL_DIR/.env"; then
-      sed -i "s/^[[:space:]]*MEDIA_DC_ADVERTISE_IP[[:space:]]*=.*/MEDIA_DC_ADVERTISE_IP=$ip/" "$INSTALL_DIR/.env"
-    elif [ -n "$ip" ]; then
-      printf '\n# Box IP the isolated mediadc sidecar advertises as its WebRTC host candidate.\nMEDIA_DC_ADVERTISE_IP=%s\n' "$ip" >> "$INSTALL_DIR/.env"
-    fi
-  fi
+  # Preserve the operator's .env; only update the update URL if asked.
   if [ -n "$UPDATE_URL_ARG" ]; then
     # Delete any existing UPDATE_URL line(s), then append via printf. The sed
     # pattern holds no user input; the value goes through printf, so a URL with
@@ -1974,7 +2059,12 @@ gate_line=""
 if [ -n "$started_at" ]; then
   gate_line="$(docker logs --since "$started_at" vs-nvr 2>&1 | grep -E 'recording volume gate (ready|blocking)' | tail -n1 || true)"
 fi
-if [ "$LIVE" = true ] && printf '%s' "$gate_line" | grep -q 'gate ready'; then
+# Nothing mounted: there is no recording drive to be ready, whatever the gate says.
+NO_DRIVE=false
+findmnt --mountpoint "$MOUNT_PATH" >/dev/null 2>&1 || NO_DRIVE=true
+if [ "$NO_DRIVE" = true ]; then
+  warn "Recording volume: no recording drive yet — not recording. Open the web app and choose one (Settings > Recording)."
+elif [ "$LIVE" = true ] && printf '%s' "$gate_line" | grep -q 'gate ready'; then
   log "Recording volume: READY — recording is active."
 elif printf '%s' "$gate_line" | grep -q 'blocking'; then
   state="$(printf '%s' "$gate_line" | grep -oE '"state":"[a-z_]+"|state=[a-z_]+' | head -n1 | tr -d '"' | sed 's/^state[:=]/state=/' || true)"
@@ -1993,11 +2083,16 @@ if [ "$LIVE" = true ]; then say "${GREEN}  VS NVR is running.${NC}"; else say "$
 say "    On this computer:  http://localhost:8080"
 say "    Other devices:     http://$lan_ip:8080"
 say ""
+if [ "$NO_DRIVE" = true ]; then
+  say "  ${YELLOW}No recording drive yet.${NC} Sign in to the web app and choose one; nothing is"
+  say "  recorded until then."
+  say ""
+fi
 say "  Remote playback uses UDP port $MEDIA_DC_PORT, which VS NVR opens on the router with"
 say "  UPnP or NAT-PMP. If the router has neither, forward that port to this computer"
-say "  and set MEDIA_DC_ADVERTISE_IP in $INSTALL_DIR/.env to your public IP."
+say "  and add MEDIA_DC_ADVERTISE_IP=<your public IP> to $INSTALL_DIR/.env."
 say ""
-if [ "$MOUNT_PLAN" = array ]; then
+if [ "$MOUNT_PLAN" = setup ] && [ "$PLAN_ACTION" = array ]; then
   say "  The recording array's first sync runs in the background, for hours, or about 1.5"
   say "  to 2.5 days on 24 TB drives. Recording works during it."
   say ""
