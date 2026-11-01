@@ -202,7 +202,7 @@ UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/Virtual-Shield-Systems/vsn
 # is the recommended trust anchor for a signed public release. Whatever we pull is
 # retagged to COMPOSE_IMAGE_REF below, so the extracted compose/unit/attester and
 # the running container all come from ONE image.
-VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:52963f47fa27270ca971f6a1e39a319440ee12c7322199fb83a5b62884b0ede5}"
+VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:bd923fcec786b53bb99089d994634070c6fbc38f9ab2865cfb999fcb66c9e6a2}"
 # The reference the bundled docker-compose.yml names; the pulled image is retagged
 # to this so `docker compose` uses exactly the image we extracted from (rather than
 # a second `docker compose pull` that could fetch a newer :latest).
@@ -211,13 +211,13 @@ COMPOSE_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr:latest"
 # The AI-detection sidecar image (amd64-only). Same pull+verify+retag treatment as
 # the main image so the whole bundle is pinned coherently. When pinning digests, pin
 # this one from the same release as VS_NVR_IMAGE; nothing checks the pairing.
-VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:75c904542e42965db3120343d44b2d658f261bf2b7befe5476d8c1cd05e04021}"
+VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:a2966e4f16b608411980d6930e198f15b865e05c2e27ac368802700d266d7aa3}"
 COMPOSE_AIDETECT_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-aidetect:latest"
 
 # The media-plane sidecar image — the WAN-facing WebRTC data-channel peer that
 # carries remote playback (docs/media-plane.md). Same pull+verify+retag
 # treatment, and like the others a signed release bakes the paired digest here.
-VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:712c500710b71e102cbe3ef38d9d32a49c6b6e66cc16507eaef57226201214d6}"
+VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:03d28088a4251a59396f232a15c569eba9ba9de19b39703f19d89f46d0e5d51f}"
 COMPOSE_MEDIADC_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-mediadc:latest"
 # Fixed in docker-compose.yml: the sidecar advertises this port as its ICE host
 # candidate, so host and container sides must match. Reported in the closing notes.
