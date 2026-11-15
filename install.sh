@@ -202,7 +202,7 @@ UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/Virtual-Shield-Systems/vsn
 # is the recommended trust anchor for a signed public release. Whatever we pull is
 # retagged to COMPOSE_IMAGE_REF below, so the extracted compose/unit/attester and
 # the running container all come from ONE image.
-VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:f6a2a1bc0645ae746a8d22a7291761f0418990ac71eedbf6075af494db9488b8}"
+VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:01f0802d5d6e216c1ba2b756132b9bc1f76c07bb7043e0f8586baf4761f6c7f6}"
 # The reference the bundled docker-compose.yml names; the pulled image is retagged
 # to this so `docker compose` uses exactly the image we extracted from (rather than
 # a second `docker compose pull` that could fetch a newer :latest).
@@ -211,13 +211,13 @@ COMPOSE_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr:latest"
 # The AI-detection sidecar image (amd64-only). Same pull+verify+retag treatment as
 # the main image so the whole bundle is pinned coherently. When pinning digests, pin
 # this one from the same release as VS_NVR_IMAGE; nothing checks the pairing.
-VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:dba7e658675bb15748c9c8e0e2ba97fac86422ea304852749ac9072f7125b350}"
+VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:ce849786eab2d8e6b414413a25de974a75f23ea7ad7a382ebb228890cc837de9}"
 COMPOSE_AIDETECT_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-aidetect:latest"
 
 # The media-plane sidecar image — the WAN-facing WebRTC data-channel peer that
 # carries remote playback (docs/media-plane.md). Same pull+verify+retag
 # treatment, and like the others a signed release bakes the paired digest here.
-VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:5d2b22684a8dec904a367be1b6ce63c466df33dcaf8bb257dbcfb7bda213ff0b}"
+VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:edc8fc19a503f04fbc4958d786a342ff380b98d5f6400e79f62504361bc388f2}"
 COMPOSE_MEDIADC_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-mediadc:latest"
 # Fixed in docker-compose.yml: the sidecar advertises this port as its ICE host
 # candidate, so host and container sides must match. Reported in the closing notes.
@@ -345,7 +345,7 @@ say "  Sets up the VS NVR recorder. About 10 minutes, most of it downloading."
 # ── Interactivity: prompt from the controlling terminal, not stdin ──
 # Under `curl … | sudo bash` the script itself is on stdin, so prompts must read
 # from /dev/tty. When there is no terminal (piped/CI), TTY_OK=0 and the installer
-# never prompts — it falls back to flags/defaults, exactly as before.
+# never prompts — it falls back to flags/defaults.
 TTY_OK=0
 if [ -r /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then TTY_OK=1; fi
 
@@ -368,6 +368,14 @@ ask_title() {
 ask_option() {
   tty_say "$(printf '  %b%2d)%b %s' "$CYAN" "$1" "$NC" "$2")"
   [ -z "${3:-}" ] || tty_say "      ${GRAY}$3${NC}"
+}
+# confirm_typed_yes — the install goes on only when the answer is exactly "yes".
+confirm_typed_yes() {
+  local yn
+  tty_say ""
+  printf '%b' "  Type 'yes' to confirm: " > /dev/tty
+  read -r yn < /dev/tty || abort "Not confirmed — cancelled."
+  [ "$yn" = "yes" ] || abort "Not confirmed — cancelled."
 }
 # ask_number MAX DEFAULT PROMPT — sets CHOICE to a number from 1 to MAX, asking
 # again on anything else. Enter gives DEFAULT, or cancels the install without one.
@@ -969,7 +977,7 @@ adopt_array_boot() {
 pick_recording_drive() {
   command -v lsblk >/dev/null 2>&1 || abort "lsblk not found (install util-linux) — needed to list drives, or mount the drive yourself and pass --recording-mount."
 
-  local dev type fstype uuid ro mnt size label model i idx prompt yn dup dup_skipped=0 b array_row=""
+  local dev type fstype uuid mnt size label model i idx prompt dup dup_skipped=0 b array_row=""
   local -a devs=() uuids=() fstypes=() rows=() details=() blank=()
   # Enumerate every block device by full path; query scalar fields ONE at a time
   # (never parse `lsblk -P` with eval — a crafted LABEL could inject). -d = do not
@@ -1078,10 +1086,7 @@ pick_recording_drive() {
     tty_say "  • They are formatted into one array, MOUNTED at $MOUNT_PATH and persisted to /etc/fstab (nofail)."
     tty_say "  • Its first sync runs in the background, for hours, or about 1.5 to 2.5 days on"
     tty_say "    24 TB drives. Recording works during it."
-    tty_say ""
-    printf '%b' "  Type 'yes' to confirm: " > /dev/tty
-    read -r yn < /dev/tty || abort "Not confirmed — cancelled."
-    [ "$yn" = "yes" ] || abort "Not confirmed — cancelled."
+    confirm_typed_yes
     PLAN_ACTION=array; PLAN_IDS=(); for b in "${blank[@]}"; do PLAN_IDS+=("$(disk_id "$b")"); done
     return 0
   fi
@@ -1114,10 +1119,7 @@ pick_recording_drive() {
   tty_say "  • It becomes the recording volume; VS NVR writes recordings and PRUNES"
   tty_say "    old ones on it to stay under the storage cap."
   tty_say "  • The drive is NOT erased — but any existing data on it shares the space."
-  tty_say ""
-  printf '%b' "  Type 'yes' to confirm: " > /dev/tty
-  read -r yn < /dev/tty || abort "Not confirmed — cancelled."
-  [ "$yn" = "yes" ] || abort "Not confirmed — cancelled."
+  confirm_typed_yes
 }
 
 # pick_array_level INDEX... — RAID 6 (the default) or RAID 5 for 4 or more
@@ -1499,23 +1501,28 @@ verify_image() {
   status_note ""
 }
 
+# pull_image <image-ref> — pull and verify it; PULLED_ID is its image ID. ONE
+# inspect binds the run identity and the verified digest to the SAME image, so a
+# concurrent pull can't retarget the tag between verify and create/tag; everything
+# downstream (verify, create, extract, retag) uses that ID.
+pull_image() {
+  local info
+  download_size "$1"
+  docker pull "$1" || abort "Failed to pull $1."
+  info="$(docker inspect -f '{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}' "$1" 2>/dev/null)" || info=""
+  PULLED_ID="${info%%|*}"
+  [ -n "$PULLED_ID" ] || abort "Could not resolve the pulled image ID for $1."
+  verify_image "$1" "${info#*|}"
+}
+
 # ── Pull + verify + extract + validate the stack files BEFORE any host mutation ──
 # Before the fstab/parent-bind changes, so a bad image aborts having touched nothing
 # on the host — only Docker's local image/tag state, which is benign and reversible.
 COSIGN_PRESENT=0
 docker image inspect "$COSIGN_IMAGE" >/dev/null 2>&1 && COSIGN_PRESENT=1
 step "Downloading VS NVR"
-download_size "$VS_NVR_IMAGE"
-docker pull "$VS_NVR_IMAGE" || abort "Failed to pull $VS_NVR_IMAGE."
-# ONE inspect binds the run identity (IMAGE_ID) and the verified digest to the SAME
-# image, so a concurrent pull can't retarget the tag between verify and create/tag.
-# Everything downstream — verify, create, extract, retag — uses this captured pair.
-img_info="$(docker inspect -f '{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}' "$VS_NVR_IMAGE" 2>/dev/null)" || img_info=""
-IMAGE_ID="${img_info%%|*}"
-REPO_DIGESTS="${img_info#*|}"
-[ -n "$IMAGE_ID" ] || abort "Could not resolve the pulled image ID for $VS_NVR_IMAGE."
-# Verify the captured digest's signature before extracting from or running the image.
-verify_image "$VS_NVR_IMAGE" "$REPO_DIGESTS"
+pull_image "$VS_NVR_IMAGE"
+IMAGE_ID="$PULLED_ID"
 EXTRACT_DIR="$(mktemp -d)"
 cid=""
 # Trap set before `docker create` so even a failed create cleans up the temp dir.
@@ -1614,13 +1621,8 @@ esac
 # COMPOSE_PROFILES line written into .env below is what actually brings it up.
 if [ "$AIDETECT_ENABLED" = 1 ]; then
   step "Downloading the AI-detection sidecar"
-  download_size "$VS_NVR_AIDETECT_IMAGE"
-  docker pull "$VS_NVR_AIDETECT_IMAGE" || abort "Failed to pull $VS_NVR_AIDETECT_IMAGE."
-  ai_info="$(docker inspect -f '{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}' "$VS_NVR_AIDETECT_IMAGE" 2>/dev/null)" || ai_info=""
-  AIDETECT_IMAGE_ID="${ai_info%%|*}"
-  AIDETECT_REPO_DIGESTS="${ai_info#*|}"
-  [ -n "$AIDETECT_IMAGE_ID" ] || abort "Could not resolve the pulled image ID for $VS_NVR_AIDETECT_IMAGE."
-  verify_image "$VS_NVR_AIDETECT_IMAGE" "$AIDETECT_REPO_DIGESTS"
+  pull_image "$VS_NVR_AIDETECT_IMAGE"
+  AIDETECT_IMAGE_ID="$PULLED_ID"
   log "Downloaded the AI-detection sidecar"
 fi
 
@@ -1628,13 +1630,8 @@ fi
 # Not optional: it is the only transport for remote playback, so a failed pull
 # aborts the install rather than shipping a box that cannot serve footage remotely.
 step "Downloading the media sidecar"
-download_size "$VS_NVR_MEDIADC_IMAGE"
-docker pull "$VS_NVR_MEDIADC_IMAGE" || abort "Failed to pull $VS_NVR_MEDIADC_IMAGE."
-dc_info="$(docker inspect -f '{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}' "$VS_NVR_MEDIADC_IMAGE" 2>/dev/null)" || dc_info=""
-MEDIADC_IMAGE_ID="${dc_info%%|*}"
-MEDIADC_REPO_DIGESTS="${dc_info#*|}"
-[ -n "$MEDIADC_IMAGE_ID" ] || abort "Could not resolve the pulled image ID for $VS_NVR_MEDIADC_IMAGE."
-verify_image "$VS_NVR_MEDIADC_IMAGE" "$MEDIADC_REPO_DIGESTS"
+pull_image "$VS_NVR_MEDIADC_IMAGE"
+MEDIADC_IMAGE_ID="$PULLED_ID"
 # Only the install checks signatures, so the checker it pulled goes again.
 [ "$COSIGN_PRESENT" = 1 ] || docker image rm "$COSIGN_IMAGE" >/dev/null 2>&1 || true
 log "Downloaded the media sidecar"
@@ -1753,9 +1750,7 @@ else
   # "already shared" branch above creates nothing and records nothing). Record the
   # fstab line ONLY when we actually append it, so a pre-existing identical line is
   # never claimed for removal.
-  if grep -qxF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
-    :
-  else
+  if ! grep -qxF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
     printf '%s\n' "$FSTAB_LINE" >> /etc/fstab
     manifest_add "FSTAB_LINE=$FSTAB_LINE"
   fi
@@ -1837,11 +1832,8 @@ elif [ "$MOUNT_PLAN" = mount ]; then
     # into boot.
     # XFS has no boot-time fsck (fsck.xfs does nothing), so its pass is 0.
     fsck_pass=2; [ "$SELECTED_FSTYPE" != xfs ] || fsck_pass=0
-    if mounted_md >/dev/null; then
-      FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $ARRAY_FSTAB_OPTS${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 $fsck_pass"
-    else
-      FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $VSNVR_FSTAB_OPTS${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 $fsck_pass"
-    fi
+    fstab_opts="$VSNVR_FSTAB_OPTS"; if mounted_md >/dev/null; then fstab_opts="$ARRAY_FSTAB_OPTS"; fi
+    FSTAB_MOUNT_LINE="UUID=$SELECTED_UUID $MOUNT_PATH $SELECTED_FSTYPE $fstab_opts${MOUNT_OWNER_OPTS:+,$MOUNT_OWNER_OPTS} 0 $fsck_pass"
   fi
   if grep -qxF "$FSTAB_MOUNT_LINE" /etc/fstab 2>/dev/null; then
     log "Mounted $SELECTED_DEV at $MOUNT_PATH (fstab entry already present)"
