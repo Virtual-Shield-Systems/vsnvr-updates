@@ -202,7 +202,7 @@ UPDATE_URL_DEFAULT="https://raw.githubusercontent.com/Virtual-Shield-Systems/vsn
 # is the recommended trust anchor for a signed public release. Whatever we pull is
 # retagged to COMPOSE_IMAGE_REF below, so the extracted compose/unit/attester and
 # the running container all come from ONE image.
-VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:01f0802d5d6e216c1ba2b756132b9bc1f76c07bb7043e0f8586baf4761f6c7f6}"
+VS_NVR_IMAGE="${VS_NVR_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr@sha256:13f33a6e13e3ff698167d051ddda2f85effa0455e3b6acbb51a78551eb0e7767}"
 # The reference the bundled docker-compose.yml names; the pulled image is retagged
 # to this so `docker compose` uses exactly the image we extracted from (rather than
 # a second `docker compose pull` that could fetch a newer :latest).
@@ -211,13 +211,13 @@ COMPOSE_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr:latest"
 # The AI-detection sidecar image (amd64-only). Same pull+verify+retag treatment as
 # the main image so the whole bundle is pinned coherently. When pinning digests, pin
 # this one from the same release as VS_NVR_IMAGE; nothing checks the pairing.
-VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:ce849786eab2d8e6b414413a25de974a75f23ea7ad7a382ebb228890cc837de9}"
+VS_NVR_AIDETECT_IMAGE="${VS_NVR_AIDETECT_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-aidetect@sha256:eec6bf9f5a0e70bf34599ea0e53789719b3f8d8ab2847904c1708257e423def5}"
 COMPOSE_AIDETECT_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-aidetect:latest"
 
 # The media-plane sidecar image — the WAN-facing WebRTC data-channel peer that
 # carries remote playback (docs/media-plane.md). Same pull+verify+retag
 # treatment, and like the others a signed release bakes the paired digest here.
-VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:edc8fc19a503f04fbc4958d786a342ff380b98d5f6400e79f62504361bc388f2}"
+VS_NVR_MEDIADC_IMAGE="${VS_NVR_MEDIADC_IMAGE:-ghcr.io/virtual-shield-systems/vs-nvr-mediadc@sha256:2d20e14d8ebd4b18b83c41ffbd4b081e1946c15770d0a494b67d197cc8416fa1}"
 COMPOSE_MEDIADC_IMAGE_REF="ghcr.io/virtual-shield-systems/vs-nvr-mediadc:latest"
 # Fixed in docker-compose.yml: the sidecar advertises this port as its ICE host
 # candidate, so host and container sides must match. Reported in the closing notes.
@@ -1779,7 +1779,7 @@ elif [ "$MOUNT_PLAN" = mount ]; then
     fallocate -l "${RESERVE_GB}G" "$RESERVE_IMAGE" || abort "Could not reserve $RESERVE_GB GB in $RESERVE_IMAGE."
     # Discarding free blocks, or zeroing inode tables and the journal lazily after
     # mounting, would punch holes in the file and give that space back.
-    mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L vs-nvr-rec "$RESERVE_IMAGE" || abort "Could not format $RESERVE_IMAGE."
+    mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L vs-nvr-rec "$RESERVE_IMAGE" || abort "Could not format $RESERVE_IMAGE."
     [ $(($(stat -c '%b * %B' "$RESERVE_IMAGE"))) -ge $((RESERVE_GB << 30)) ] ||
       abort "The system disk's filesystem can't reserve space ($RESERVE_IMAGE came out sparse). Record to a drive instead."
     log "Reserved $RESERVE_GB GB in $RESERVE_IMAGE"

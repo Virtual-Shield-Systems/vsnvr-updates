@@ -64,7 +64,7 @@ $WslSettings = @(
     @{ Section = 'wsl2'; Key = 'networkingMode'; Value = 'mirrored' },
     @{ Section = 'experimental'; Key = 'hostAddressLoopback'; Value = 'true' }
 )
-# Room inside the disk for Debian, Docker's images and the database; the rest is footage.
+# Space left free beside the footage for Debian's packages, Docker's images and the database.
 $SystemGB = 20
 $MinSizeGB = 64
 
@@ -475,10 +475,9 @@ function New-NvrDistro($state) {
     try {
         if ((Invoke-Wsl "--export $setup `"$tar`"") -ne 0) { Fail "Could not export the Debian image." }
         if ((Invoke-Wsl "--mount --vhd `"$vhdx`" --bare") -ne 0) { Fail "Could not attach $vhdx to WSL." }
-        $footageGB = $storage.SizeGB - $SystemGB
         $fill = @'
 set -e
-size=$1; tar=$(wslpath "$2"); footage=$3
+size=$1; tar=$(wslpath "$2"); system=$3
 dev=$(lsblk -dbno NAME,SIZE,FSTYPE | awk -v s="$size" '$2 >= s-4194304 && $2 <= s && $3 == "" {print $1}')
 [ "$(printf '%s\n' "$dev" | grep -c .)" = 1 ] || { echo "could not find the new disk" >&2; exit 1; }
 mkfs.ext4 -q -L vs-nvr "/dev/$dev"
@@ -521,8 +520,10 @@ EOF
 mkdir -p "$r/etc/systemd/system/local-fs-pre.target.wants" "$r/var/lib/vs-nvr" "$r/srv/vs-nvr/recordings"
 ln -sf /etc/systemd/system/vs-nvr-rshared.service "$r/etc/systemd/system/local-fs-pre.target.wants/vs-nvr-rshared.service"
 img="$r/var/lib/vs-nvr/recordings.img"
+footage=$(( $(df --output=avail -B1M "$r" | tail -n1) / 1024 - system ))
+[ "$footage" -ge 32 ] || { echo "only $footage GB would be left for recordings" >&2; exit 1; }
 fallocate -l "${footage}G" "$img"
-mkfs.ext4 -q -F -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L vs-nvr-rec "$img"
+mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -L vs-nvr-rec "$img"
 m=$(mktemp -d)
 mount -o loop "$img" "$m"
 chown 65531:65531 "$m"
@@ -532,7 +533,7 @@ umount "$r"
 '@
         # Hand over the fixed VHDX's virtual size, not the file length (it carries a footer).
         $bytes = [string]([int64]$storage.SizeGB * 1GB)
-        $rc = Invoke-Linux $setup $fill @($bytes, $tar.Replace('\', '/'), [string]$footageGB)
+        $rc = Invoke-Linux $setup $fill @($bytes, $tar.Replace('\', '/'), [string]$SystemGB)
         Invoke-Wsl "--unmount `"$vhdx`"" | Out-Null
         if ($rc -ne 0) { Fail "Could not prepare the VS NVR disk." }
     } finally {
